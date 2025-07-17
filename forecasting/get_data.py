@@ -33,7 +33,7 @@ def get_historical_fr_data(query_start_date: str, query_end_date: str) -> pd.Dat
     service_stacked_df.index = service_stacked_df.deliveryStart
 
     # Extract only the 'DCL' data
-    dcl_data = service_stacked_df[service_stacked_df['auctionProduct'] == 'DCL']
+    dcl_data = service_stacked_df[service_stacked_df['auctionProduct'] == 'DCL'].copy()
 
     # Convert price and volume columns to numeric
     dcl_data['clearingPrice'] = pd.to_numeric(dcl_data['clearingPrice'], errors='coerce')
