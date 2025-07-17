@@ -25,7 +25,7 @@ def rolling_average_multi_timeperiod(num_days = 7, num_timestamps_per_day = 6, d
     return avg_list
 
 
-def windowed_dataset_multi_input(series, X_lag_full, window_size, batch_size, shuffle_buffer):
+def windowed_dataset_multi_input(series, X_lag_full, window_size, forecast_horizon, batch_size, shuffle_buffer):
     """
     Generates a TensorFlow dataset of (X_seq, X_lag), y for a multi-input NN
 
@@ -33,6 +33,7 @@ def windowed_dataset_multi_input(series, X_lag_full, window_size, batch_size, sh
       series (1D array): univariate time series
       X_lag_full (2D array): aligned lag/static features
       window_size (int): number of time steps for each sequence window
+      forecast_horizon (int): Number of future time steps to predict
       batch_size (int): batch size for training
       shuffle_buffer (int): buffer size for shuffling
 
@@ -46,23 +47,25 @@ def windowed_dataset_multi_input(series, X_lag_full, window_size, batch_size, sh
     # Concatenate along axis 1: final shape = (n, 1 + num_lag_features)
     full_input = tf.concat([series, X_lag_full], axis=1)
 
+    total_window = window_size + forecast_horizon
+
     # Create dataset
     ds = tf.data.Dataset.from_tensor_slices(full_input)
 
     # Window and batch
-    ds = ds.window(window_size + 1, shift=1, drop_remainder=True)
-    ds = ds.flat_map(lambda window: window.batch(window_size + 1))
+    ds = ds.window(total_window, shift=1, drop_remainder=True)
+    ds = ds.flat_map(lambda window: window.batch(total_window))
 
     # Split into (X_seq, X_lag), y
     def split_window(window):
         series_window = window[:, 0:1]
         lag_window = window[:, 1:]
 
-        X_seq = series_window[:-1]
-        X_lag = lag_window[-1]
-        y = series_window[-1]
+        X_seq = series_window[:window_size]     # (window_size, 1)
+        X_lag = lag_window[-1]                  # static features from last input step
+        y = tf.reshape(series_window[window_size:], (forecast_horizon,))    # (forecast_horizon, )                  
 
-        return (X_seq, X_lag), tf.squeeze(y, axis=0)
+        return (X_seq, X_lag), y
 
     ds = ds.map(split_window)
     ds = ds.shuffle(shuffle_buffer).batch(batch_size).cache().prefetch(1)
@@ -95,7 +98,7 @@ def get_LSTM_model(window_size: int = 24,
     # Combine both of them
     x_combined = tf.keras.layers.Concatenate()([x_seq, x_lag])
     x = tf.keras.layers.Dense(64, activation='relu')(x_combined)
-    output = tf.keras.layers.Dense(1)(x)
+    output = tf.keras.layers.Dense(6)(x)
 
     # Create the model
     model = tf.keras.Model(inputs=[seq_input, lag_input], outputs=output)
@@ -109,7 +112,7 @@ def get_LSTM_model(window_size: int = 24,
     return model
 
 # The function to get the predictions
-def lstm_forecast_multi_input(model, series, X_lag_full, window_size, batch_size):
+def lstm_forecast_multi_input(model, series, X_lag_full, window_size, forecast_horizon, batch_size):
     """
     Generates predictions using a multi-input model (sequence + lag/static).
 
@@ -118,6 +121,7 @@ def lstm_forecast_multi_input(model, series, X_lag_full, window_size, batch_size
         series (1D array): Time series data (shape: [n,])
         X_lag_full (2D array): Lag/static features aligned with the series (shape: [n, num_features])
         window_size (int): Number of time steps for sequence input
+        forecast_horizon (int): number of future steps to predict
         batch_size (int): Batch size for inference
 
     Returns:
@@ -131,14 +135,16 @@ def lstm_forecast_multi_input(model, series, X_lag_full, window_size, batch_size
     # Combine sequence and lag input
     full_input = tf.concat([series, X_lag_full], axis=1)  # (n, 1 + num_lag_features)
 
+    total_window = window_size + forecast_horizon
+
     # Create dataset of input windows
     ds = tf.data.Dataset.from_tensor_slices(full_input)
-    ds = ds.window(window_size, shift=1, drop_remainder=True)
-    ds = ds.flat_map(lambda window: window.batch(window_size))
+    ds = ds.window(total_window, shift=1, drop_remainder=True)
+    ds = ds.flat_map(lambda window: window.batch(total_window))
 
     # Split into inputs for model: (X_seq, X_lag)
     def extract_inputs(window):
-        series_window = window[:, 0:1]   # (window_size, 1)
+        series_window = window[:window_size, 0:1]   # (window_size, 1)
         lag_features = window[-1, 1:]    # (num_lags,)
         return series_window, lag_features
 
